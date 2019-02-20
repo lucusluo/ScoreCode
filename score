@@ -1,0 +1,491 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Feb 19 15:40:37 2019
+
+@author: lucasluo
+"""
+
+import pandas as pd
+import math
+      
+class Chi2(object):
+    def __init__(self,path,xname,yname='客户标签',y=['好客户','坏客户'],max_interval=5,num=200,cont=True):
+        self.data = pd.read_excel(path)
+        self.input = pd.DataFrame(pd.read_excel(path), columns = [xname,yname])
+        self.xname = xname
+        self.yname = yname
+        self.y = y
+        self.max_interval = max_interval
+        self.num = num
+        self.cont = True
+        self.var_value = sorted(list(set(self.input[self.xname].dropna(axis = 0, how = 'any'))))
+    
+    '''
+    -------------------------卡方分箱--------------------
+    '''    
+    #计算卡方统计量
+    def chi2(self):
+        all_cnt = self.data[self.yname].count()
+        all_0_cnt = self.data[self.data[self.yname] == self.y[0]].shape[0]
+        all_1_cnt = self.data[self.data[self.yname] == self.y[1]].shape[0]
+        expect_0_ratio = all_0_cnt * 1.0 / all_cnt
+        expect_1_ratio = all_1_cnt * 1.0 / all_cnt
+        # 对变量的每个值计算实际个数、期望个数以及卡方统计量
+        var_values = self.var_value
+        actual_0_cnt = []; actual_1_cnt = []; actual_all_cnt = []; 
+        expect_0_cnt = []; expect_1_cnt = []; chi2_value = []
+        
+        for value in var_values:
+            actual_0 = self.input[(self.input[self.xname]==value)&(self.input[self.yname]==self.y[0])].shape[0]
+            actual_1 = self.input[(self.input[self.xname]==value)&(self.input[self.yname]==self.y[1])].shape[0]
+            actual_all = actual_0 + actual_1
+            expect_0 = actual_all * expect_0_ratio
+            expect_1 = actual_all * expect_1_ratio
+            chi2_0 = (expect_0 - actual_0)**2 / expect_0
+            chi2_1 = (expect_1 - actual_1)**2 / expect_1
+            actual_0_cnt.append(actual_0)
+            actual_1_cnt.append(actual_1)
+            actual_all_cnt.append(actual_all)
+            expect_0_cnt.append(expect_0)
+            expect_1_cnt.append(expect_1)
+            chi2_value.append(chi2_0 + chi2_1)
+            
+        chi2_result = pd.DataFrame({'actual_0':actual_0_cnt, 'actual_1':actual_1_cnt, 'expect_0':expect_0_cnt, \
+                                'expect_1':expect_1_cnt, 'chi2_value':chi2_value, self.xname+'_start':var_values, \
+                                self.xname+'_end':var_values}, \
+                                columns=[self.xname+'_start', self.xname+'_end', 'actual_0', 'actual_1', 'expect_0', \
+                                         'expect_1', 'chi2_value'])
+        
+        print('卡方分箱基础数据处理已完成，将进行分箱-------')   
+        
+        groups = chi2_result.shape[0]
+        min_value = chi2_result['chi2_value'].min()
+        while ((groups > self.max_interval) | (min_value <= 3.841 and groups > 2)):
+            min_idx = chi2_result[chi2_result['chi2_value']==chi2_result['chi2_value'].min()].index.tolist()[0]
+            if min_idx == 0:
+                chi2_result = self.merge(chi2_result, min_idx, min_idx+1)
+            elif min_idx == groups-1:    
+                chi2_result = self.merge(chi2_result, min_idx, min_idx-1)
+            else:
+                if chi2_result.loc[min_idx-1, 'chi2_value'] > chi2_result.loc[min_idx+1, 'chi2_value']:
+                    chi2_result = self.merge(chi2_result, min_idx, min_idx+1)
+                else:
+                    chi2_result = self.merge(chi2_result, min_idx, min_idx-1)
+            groups = chi2_result.shape[0]
+            min_value = chi2_result['chi2_value'].min()
+        return chi2_result
+       
+    #定义合并区间的方法
+    def merge(self,chi2_result, idx, merge_idx):
+        #按照idx和merge_idx执行合并
+        chi2_result.ix[idx, 'actual_0'] = chi2_result.ix[idx, 'actual_0'] + chi2_result.ix[merge_idx, 'actual_0']
+        chi2_result.ix[idx, 'actual_1'] = chi2_result.ix[idx, 'actual_1'] + chi2_result.ix[merge_idx, 'actual_1']
+        chi2_result.ix[idx, 'expect_0'] = chi2_result.ix[idx, 'expect_0'] + chi2_result.ix[merge_idx, 'expect_0']    
+        chi2_result.ix[idx, 'expect_1'] = chi2_result.ix[idx, 'expect_1'] + chi2_result.ix[merge_idx, 'expect_1']   
+        chi2_0 = (chi2_result.ix[idx, 'expect_0'] - chi2_result.ix[idx, 'actual_0'])**2 / chi2_result.ix[idx, 'expect_0']
+        chi2_1 = (chi2_result.ix[idx, 'expect_1'] - chi2_result.ix[idx, 'actual_1'])**2 / chi2_result.ix[idx, 'expect_1']
+        chi2_result.ix[idx, 'chi2_value'] = chi2_0 + chi2_1
+        #调整每个区间的起始值
+        if idx < merge_idx:
+            chi2_result.ix[idx, self.xname+'_end'] = chi2_result.ix[merge_idx, self.xname+'_end']
+        else:
+            chi2_result.ix[idx, self.xname+'_start'] = chi2_result.ix[merge_idx, self.xname+'_start']
+        chi2_result = chi2_result.drop([merge_idx])
+        chi2_result = chi2_result.reset_index(drop=True)
+        
+        return chi2_result
+    
+    '''
+    ---------------------------CAIM分箱----------------------
+    '''
+    def caim(self):
+        # 取出数据集的最大值和最小值并定义上下界
+        caim_max = max(self.var_value) + 0.01
+        caim_min = min(self.var_value) + 0.01
+        caim_limit = [caim_min,caim_max]
+        # 初始化全局最优值
+        caim_global = 0
+        # 初始断点数
+        var_break = self.var_value
+        #循环求解
+        caim_break = [];caim_value = []
+        for i in range(0,self.max_interval-1):
+            for j in var_break:
+                box = [j,caim_limit]
+                caim_va = self.caim_best(box=box)
+                caim_break.append(box)
+                caim_value.append(caim_va)
+            break_result = pd.DataFrame({'caim_break':caim_break,'caim_value':caim_value})
+            break_best =break_result[break_result['caim_value'] == max(break_result['caim_value'])]
+            if break_best[0][1] > caim_global:
+                bin_break = break_best[0][1]
+                caim_global = break_best[0][1]
+                var_break = var_break.remove(j)
+            else:
+                break
+        return bin_break
+
+      
+    # caim全局最优值
+    def caim_best(self,box):
+        # 断点个数
+        caim_box = len(box)
+        if caim_box == 0:
+            print('请输入分段区间')
+        else:
+            caim_bin = sorted(box)
+            # 对数据点进行分段
+            caim_name_cnt = [];caim_0_cnt = [];caim_1_cnt = [];caim_cnt = [];
+            caim_g_rate = [];caim_b_rate = []
+            
+            # 好坏样本数
+            caim_g = self.input[self.input[self.yname]==self.y[0]].shape[0]
+            caim_b = self.input[self.input[self.yname]==self.y[1]].shape[0]
+            
+            for value in range(1,caim_box):
+                caim_0 = self.input[(self.input[self.xname]>caim_bin[value-1])& \
+                                    (self.input[self.xname]<=caim_bin[value])& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                caim_1 = self.input[(self.input[self.xname]>caim_bin[value-1])& \
+                                    (self.input[self.xname]<=caim_bin[value])& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                caim_all = caim_0 + caim_1 
+                caim_0_rate = caim_0**2/(caim_all*caim_g)
+                caim_1_rate = caim_1**2/(caim_all*caim_b)
+                caim_name = '%s~%s' %(caim_bin[value-1],caim_bin[value-1])
+                caim_name_cnt.append(caim_name)
+                caim_0_cnt.append(caim_0)
+                caim_1_cnt.append(caim_1)
+                caim_cnt.append(caim_all)
+                caim_g_rate.append(caim_0_rate)
+                caim_b_rate.append(caim_1_rate)
+            
+            caim_result = pd.DataFrame({'name':caim_name_cnt,'caim_0':caim_0_cnt, \
+                                        'caim_1':caim_1_cnt,'caim_cnt':caim_cnt, \
+                                        'caim_g_rate':caim_g_rate,'caim_b_rate':caim_b_rate})
+            caim_cacc = (caim_g + caim_b) * (caim_result['caim_g_rate'].sum() + \
+                         caim_result['caim_b_rate'].sum() - 1)/math.log(caim_box -1)
+            if caim_g + caim_b < self.num:
+                return 0
+            else:
+                return((caim_cacc/(caim_cacc + caim_g + caim_b))**0.5)
+    
+
+    '''   
+    -----------------------IV值----------------------
+    '''         
+    def iv(self,br):
+        # 好坏样本数
+            total_good = len(self.input[self.input[self.yname]==self.y[0]])
+            total_bad = len(self.input[self.input[self.yname]==self.y[1]])
+            common_good = self.input[self.xname][self.input[self.yname]==self.y[0]].count()
+            common_bad = self.input[self.xname][self.input[self.yname]==self.y[1]].count()
+            na_good = total_good - common_good
+            na_bad = total_bad - common_bad
+            iv_na_rate = ((na_good/total_good - na_bad/total_bad)* \
+                          math.log((na_good/total_good)/(na_bad/total_bad)))
+            iv_common_rate = 0
+            if self.cont == True:
+                br = sorted(br)
+                for value in range(1,br):
+                    iv_0 = self.input[(self.input[self.xname]>br[value-1])& \
+                                    (self.input[self.xname]<=br[value])& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                    iv_1 = self.input[(self.input[self.xname]>br[value-1])& \
+                                    (self.input[self.xname]<=br[value])& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                    iv_common_rate = iv_common_rate + ((iv_0/total_good - iv_1/total_bad)* \
+                                 math.log((iv_0/total_good)/(iv_1/total_bad)))
+            else:
+                for value in br:
+                    iv_0 = self.input[(self.input[self.xname]==value)& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                    iv_1 = self.input[(self.input[self.xname]==value)& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                    iv_common_rate = iv_common_rate + ((iv_0/total_good - iv_1/total_bad)* \
+                                 math.log((iv_0/total_good)/(iv_1/total_bad)))
+            iv_result = iv_common_rate + iv_na_rate
+            return iv_result
+    
+    '''
+    --------------------描述性统计量------------------
+    '''
+    def summary(self):
+        pass
+
+from scipy.stats import ks_2samp
+
+get_ks = lambda y_pred,y_true: ks_2samp(y_pred[y_true==1], y_pred[y_true!=1]).statistic
+
+get_ks(x,y)   
+    '''
+    ----------------------KS值---------------------
+    功能: 计算KS值，输出对应分割点和累计分布函数曲线图
+    输入值:
+    data: 二维数组或dataframe，包括模型得分和真实的标签
+    score_col: 一维数组或series，代表模型得分（一般为预测正类的概率）
+    class_col: 一维数组或series，代表真实的标签（{0,1}或{-1,1}）
+    输出值:
+    'ks': KS值，'cdf_df': 好坏人累积概率分布以及其差值gap
+    '''
+    def ks(self):
+        def ks_calc_2samp(data,score_col,class_col):
+  
+    Bad = data.ix[data[class_col[0]]==1,score_col[0]]
+    Good = data.ix[data[class_col[0]]==0, score_col[0]]
+    data1 = Bad.values
+    data2 = Good.values
+    n1 = data1.shape[0]
+    n2 = data2.shape[0]
+    data1 = np.sort(data1)
+    data2 = np.sort(data2)
+    data_all = np.concatenate([data1,data2])
+    cdf1 = np.searchsorted(data1,data_all,side='right')/(1.0*n1)
+    cdf2 = (np.searchsorted(data2,data_all,side='right'))/(1.0*n2)
+    ks = np.max(np.absolute(cdf1-cdf2))
+    cdf1_df = pd.DataFrame(cdf1)
+    cdf2_df = pd.DataFrame(cdf2)
+    cdf_df = pd.concat([cdf1_df,cdf2_df],axis = 1)
+    cdf_df.columns = ['cdf_Bad','cdf_Good']
+    cdf_df['gap'] = cdf_df['cdf_Bad']-cdf_df['cdf_Good']
+    return ks,cdf_df
+    
+    '''
+    --------------------相关系数--------------------
+    '''
+    def cor(self):
+        pass
+                
+                
+            
+            
+
+
+
+
+
+import random
+import math
+from operator import itemgetter
+'''
+--------------------GA分箱--------------
+'''
+class GA:
+    '''
+    This is a class of GA algorithm. 
+    '''
+    def __init__(self,parameter):
+        '''
+        Initialize the pop of GA algorithom and evaluate the pop by computing its' fitness value .
+        The data structure of pop is composed of several individuals which has the form like that:
+        
+        {'Gene':a object of class Gene, 'fitness': 1.02(for example)}
+
+        Representation of Gene is a list: [b s0 u0 sita0 s1 u1 sita1 s2 u2 sita2]
+        
+        '''
+        #parameter = [CXPB, MUTPB, NGEN, popsize, low, up]
+        self.parameter = parameter
+
+        low = self.parameter[4]
+        up = self.parameter[5]
+        
+        self.bound = []
+        self.bound.append(low)
+        self.bound.append(up)
+        
+        pop = []
+        for i in range(self.parameter[3]):
+            geneinfo = []
+            for pos in range(len(low)):
+                geneinfo.append(random.uniform(self.bound[0][pos], self.bound[1][pos]))#initialise popluation
+                
+            fitness = evaluate(geneinfo)#evaluate each chromosome
+            pop.append({'Gene':Gene(data = geneinfo), 'fitness':fitness})#store the chromosome and its fitness
+            
+        self.pop = pop
+        self.bestindividual = self.selectBest(self.pop)#store the best chromosome in the population
+        
+    def selectBest(self, pop):
+        '''
+        select the best individual from pop
+        '''
+        s_inds = sorted(pop, key = itemgetter("fitness"), reverse = False)
+        return s_inds[0]
+        
+    def selection(self, individuals, k):
+        '''
+        select two individuals from pop
+        '''
+        s_inds = sorted(individuals, key = itemgetter("fitness"), reverse=True)#sort the pop by the reference of 1/fitness 
+        sum_fits = sum(1/ind['fitness'] for ind in individuals) #sum up the 1/fitness of the whole pop
+        
+        chosen = []
+        for i in xrange(k):
+            u = random.random() * sum_fits#randomly produce a num in the range of [0, sum_fits]
+            sum_ = 0
+            for ind in s_inds:
+                sum_ += 1/ind['fitness']#sum up the 1/fitness
+                if sum_ > u:
+                    #when the sum of 1/fitness is bigger than u, choose the one, which means u is in the range of [sum(1,2,...,n-1),sum(1,2,...,n)] and is time to choose the one ,namely n-th individual in the pop
+                    chosen.append(ind)
+                    break
+        
+        return chosen    
+
+
+    def crossoperate(self, offspring):
+        '''
+        cross operation
+        '''
+        dim = len(offspring[0]['Gene'].data)
+
+        geninfo1 = offspring[0]['Gene'].data#Gene's data of first offspring chosen from the selected pop
+        geninfo2 = offspring[1]['Gene'].data#Gene's data of second offspring chosen from the selected pop
+        
+        pos1 = random.randrange(1,dim)#select a position in the range from 0 to dim-1, 
+        pos2 = random.randrange(1,dim)
+
+        newoff = Gene(data = [])#offspring produced by cross operation
+        temp = []
+        for i in range(dim):
+            if (i >= min(pos1,pos2) and i <= max(pos1,pos2)):
+                temp.append(geninfo2[i])
+                #the gene data of offspring produced by cross operation is from the second offspring in the range [min(pos1,pos2),max(pos1,pos2)]
+            else:
+                temp.append(geninfo1[i])
+                #the gene data of offspring produced by cross operation is from the frist offspring in the range [min(pos1,pos2),max(pos1,pos2)]
+        newoff.data = temp
+       
+        return newoff
+
+
+    def mutation(self, crossoff, bound):
+        '''
+        mutation operation
+        '''
+        
+        dim = len(crossoff.data)
+
+        pos = random.randrange(1,dim)#chose a position in crossoff to perform mutation.
+
+        crossoff.data[pos] = random.uniform(bound[0][pos],bound[1][pos])
+        return crossoff
+    
+    def GA_main(self):
+        '''
+        main frame work of GA
+        '''
+        
+        popsize = self.parameter[3]
+        
+        print("Start of evolution")
+        
+        # Begin the evolution
+        for g in range(NGEN):
+            
+            print("-- Generation %i --" % g)      
+                      
+            #Apply selection based on their converted fitness
+            selectpop = self.selection(self.pop, popsize)   
+
+            nextoff = []    
+            while len(nextoff) != popsize:      
+                # Apply crossover and mutation on the offspring            
+                                
+                # Select two individuals
+                offspring = [random.choice(selectpop) for i in xrange(2)]
+                
+                if random.random() < CXPB: # cross two individuals with probability CXPB
+                    crossoff = self.crossoperate(offspring)
+                    fit_crossoff = evaluate(self.xydata, crossoff.data)# Evaluate the individuals           
+                    
+                    if random.random() < MUTPB: # mutate an individual with probability MUTPB
+                        muteoff = self.mutation(crossoff,self.bound)
+                        fit_muteoff = evaluate(self.xydata, muteoff.data)# Evaluate the individuals
+                        nextoff.append({'Gene':muteoff,'fitness':fit_muteoff})
+                        
+            # The population is entirely replaced by the offspring
+            self.pop = nextoff
+            
+            # Gather all the fitnesses in one list and print the stats
+            fits = [ind['fitness'] for ind in self.pop]
+                
+            length = len(self.pop)
+            mean = sum(fits) / length
+            sum2 = sum(x*x for x in fits)
+            std = abs(sum2 / length - mean**2)**0.5
+            best_ind = self.selectBest(self.pop)
+
+            if best_ind['fitness'] < self.bestindividual['fitness']:
+                self.bestindividual = best_ind
+
+            print("Best individual found is %s, %s" % (self.bestindividual['Gene'].data,self.bestindividual['fitness']))
+            print("  Min fitness of current pop: %s" % min(fits))
+            print("  Max fitness of current pop: %s" % max(fits))
+            print("  Avg fitness of current pop: %s" % mean)
+            print("  Std of currrent pop: %s" % std)
+        
+        print("-- End of (successful) evolution --")    
+
+if __name__ == "__main__":
+
+    CXPB, MUTPB, NGEN, popsize = 0.8, 0.3, 50, 100#control parameters
+    
+    up = [64, 64, 64, 64, 64, 64, 64, 64, 64, 64]#upper range for variables
+    low = [-64, -64, -64, -64, -64, -64, -64, -64, -64, -64]#lower range for variables
+    parameter = [CXPB, MUTPB, NGEN, popsize, low, up]
+    
+    run = GA(parameter)
+    run.GA_main()            
+            
+         
+            
+            
+            
+            
+            
+            
+    def box(self):
+        chi2_box = self.chi2()
+        caim_box = self.caim()
+        return chi2_box,caim_box
+    '''
+    if __name__ == '__main__':
+        self.chi2()
+    '''
+a = Chi2(path='F:/工作/小微产品20180921/20181009/原始数据2018.xlsx',xname='年龄',yname='客户类型_3个月表现期')
+c = a.box()
+d = a.box()
+
+import pandas as pd
+path = pd.read_excel('F:/工作/小微产品20180921/20181009/原始数据2018.xlsx')
+a =len(path['年龄'])
+b = path['年龄'].count()
+
+total_good = len(path[path['客户类型']=='好客户'])
+total_bad = len(path[path['客户类型']=='坏客户'])
+common_good = path['年龄'][path['客户类型']=='好客户'].count()
+common_bad = path['年龄'][path['客户类型']=='坏客户'].count()
+na_good = total_good - common_good
+na_bad = total_bad - common_bad
+
+data = pd.read_excel(path)
+
+box = [1,5,9,10]
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
