@@ -1,0 +1,84 @@
+'''   
+    -----------------------IV值----------------------
+    '''         
+    def iv(self,br):
+        # 好坏样本数
+            total_good = len(self.input[self.input[self.yname]==self.y[0]])
+            total_bad = len(self.input[self.input[self.yname]==self.y[1]])
+            common_good = self.input[self.xname][self.input[self.yname]==self.y[0]].count()
+            common_bad = self.input[self.xname][self.input[self.yname]==self.y[1]].count()
+            na_good = total_good - common_good
+            na_bad = total_bad - common_bad
+            iv_na_rate = ((na_good/total_good - na_bad/total_bad)* \
+                          math.log((na_good/total_good)/(na_bad/total_bad)))
+            iv_common_rate = 0
+            if self.cont == True:
+                br = sorted(br)
+                for value in range(1,br):
+                    iv_0 = self.input[(self.input[self.xname]>br[value-1])& \
+                                    (self.input[self.xname]<=br[value])& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                    iv_1 = self.input[(self.input[self.xname]>br[value-1])& \
+                                    (self.input[self.xname]<=br[value])& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                    iv_common_rate = iv_common_rate + ((iv_0/total_good - iv_1/total_bad)* \
+                                 math.log((iv_0/total_good)/(iv_1/total_bad)))
+            else:
+                for value in br:
+                    iv_0 = self.input[(self.input[self.xname]==value)& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                    iv_1 = self.input[(self.input[self.xname]==value)& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                    iv_common_rate = iv_common_rate + ((iv_0/total_good - iv_1/total_bad)* \
+                                 math.log((iv_0/total_good)/(iv_1/total_bad)))
+            iv_result = iv_common_rate + iv_na_rate
+            return iv_result
+    
+    '''
+    --------------------描述性统计量------------------
+    '''
+    def summary(self):
+        pass
+
+from scipy.stats import ks_2samp
+
+get_ks = lambda y_pred,y_true: ks_2samp(y_pred[y_true==1], y_pred[y_true!=1]).statistic
+
+get_ks(x,y)   
+    '''
+    ----------------------KS值---------------------
+    功能: 计算KS值，输出对应分割点和累计分布函数曲线图
+    输入值:
+    data: 二维数组或dataframe，包括模型得分和真实的标签
+    score_col: 一维数组或series，代表模型得分（一般为预测正类的概率）
+    class_col: 一维数组或series，代表真实的标签（{0,1}或{-1,1}）
+    输出值:
+    'ks': KS值，'cdf_df': 好坏人累积概率分布以及其差值gap
+    '''
+    def ks(self):
+        def ks_calc_2samp(data,score_col,class_col):
+  
+    Bad = data.ix[data[class_col[0]]==1,score_col[0]]
+    Good = data.ix[data[class_col[0]]==0, score_col[0]]
+    data1 = Bad.values
+    data2 = Good.values
+    n1 = data1.shape[0]
+    n2 = data2.shape[0]
+    data1 = np.sort(data1)
+    data2 = np.sort(data2)
+    data_all = np.concatenate([data1,data2])
+    cdf1 = np.searchsorted(data1,data_all,side='right')/(1.0*n1)
+    cdf2 = (np.searchsorted(data2,data_all,side='right'))/(1.0*n2)
+    ks = np.max(np.absolute(cdf1-cdf2))
+    cdf1_df = pd.DataFrame(cdf1)
+    cdf2_df = pd.DataFrame(cdf2)
+    cdf_df = pd.concat([cdf1_df,cdf2_df],axis = 1)
+    cdf_df.columns = ['cdf_Bad','cdf_Good']
+    cdf_df['gap'] = cdf_df['cdf_Bad']-cdf_df['cdf_Good']
+    return ks,cdf_df
+    
+    '''
+    --------------------相关系数--------------------
+    '''
+    def cor(self):
+        pass
