@@ -1,0 +1,188 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Feb 21 09:40:06 2019
+
+@author: Administrator
+"""
+
+import pandas as pd
+import math
+import copy
+      
+class Bin(object):
+    
+    @staticmethod
+    def tip():
+        print("-----------------------参数含义---------------------\n \
+        path:数据集\n \
+        xname:目标变量名\n \
+        yname:客户标签（默认名）\n \
+        y:客户标签标记（默认值为['好客户','坏客户']）\n \
+        max_interval：最大分箱数（默认值为5）\n \
+        num:单箱最少样本限制（默认值为200）")
+    
+    def __init__(self,data,xname,yname='客户标签',y=['好客户','坏客户'],max_interval=5,num=200):
+        self.data = data
+        self.input = pd.DataFrame(data, columns = [xname,yname])
+        self.xname = xname
+        self.yname = yname
+        self.y = y
+        self.max_interval = max_interval
+        self.num = num
+        self.var_value = sorted(list(set(self.input[self.xname].dropna(axis = 0, how = 'any'))))
+    
+    '''
+    -------------------------卡方分箱--------------------
+    '''    
+    #计算卡方统计量
+    def chi2(self):
+        all_cnt = self.data[self.yname].count()
+        all_0_cnt = self.data[self.data[self.yname] == self.y[0]].shape[0]
+        all_1_cnt = self.data[self.data[self.yname] == self.y[1]].shape[0]
+        expect_0_ratio = all_0_cnt * 1.0 / all_cnt
+        expect_1_ratio = all_1_cnt * 1.0 / all_cnt
+        # 对变量的每个值计算实际个数、期望个数以及卡方统计量
+        var_values = self.var_value
+        actual_0_cnt = []; actual_1_cnt = []; actual_all_cnt = []; 
+        expect_0_cnt = []; expect_1_cnt = []; chi2_value = []
+        
+        for value in var_values:
+            actual_0 = self.input[(self.input[self.xname]==value)&(self.input[self.yname]==self.y[0])].shape[0]
+            actual_1 = self.input[(self.input[self.xname]==value)&(self.input[self.yname]==self.y[1])].shape[0]
+            actual_all = actual_0 + actual_1
+            expect_0 = actual_all * expect_0_ratio
+            expect_1 = actual_all * expect_1_ratio
+            chi2_0 = (expect_0 - actual_0)**2 / expect_0
+            chi2_1 = (expect_1 - actual_1)**2 / expect_1
+            actual_0_cnt.append(actual_0)
+            actual_1_cnt.append(actual_1)
+            actual_all_cnt.append(actual_all)
+            expect_0_cnt.append(expect_0)
+            expect_1_cnt.append(expect_1)
+            chi2_value.append(chi2_0 + chi2_1)
+            
+        chi2_result = pd.DataFrame({'actual_0':actual_0_cnt, 'actual_1':actual_1_cnt, 'expect_0':expect_0_cnt, \
+                                'expect_1':expect_1_cnt, 'chi2_value':chi2_value, self.xname+'_start':var_values, \
+                                self.xname+'_end':var_values,'actual_all':actual_all_cnt}, \
+                                columns=[self.xname+'_start', self.xname+'_end', 'actual_0', 'actual_1', 'expect_0', \
+                                         'expect_1', 'chi2_value','actual_all']) 
+        groups = chi2_result.shape[0]
+        min_value = chi2_result['chi2_value'].min()
+        min_num = chi2_result['actual_all'].min()
+        while ((groups > self.max_interval) | (min_value < 3.841 and groups > 2) | (min_num < self.num and groups > 2)):
+            min_idx = chi2_result[chi2_result['chi2_value']==chi2_result['chi2_value'].min()].index.tolist()[0]
+            if min_idx == 0:
+                chi2_result = self.merge(chi2_result, min_idx, min_idx+1)
+            elif min_idx == groups-1:    
+                chi2_result = self.merge(chi2_result, min_idx, min_idx-1)
+            else:
+                if chi2_result.loc[min_idx-1, 'chi2_value'] > chi2_result.loc[min_idx+1, 'chi2_value']:
+                    chi2_result = self.merge(chi2_result, min_idx, min_idx+1)
+                else:
+                    chi2_result = self.merge(chi2_result, min_idx, min_idx-1)
+            groups = chi2_result.shape[0]
+            min_value = chi2_result['chi2_value'].min()
+            min_num = chi2_result['actual_all'].min()
+        caim = [list(chi2_result[self.xname+'_start'])[0] - 0.01] + list(chi2_result[self.xname+'_end'])
+        return caim
+       
+    #定义合并区间的方法
+    def merge(self,chi2_result, idx, merge_idx):
+        #按照idx和merge_idx执行合并
+        chi2_result.ix[idx, 'actual_0'] = chi2_result.ix[idx, 'actual_0'] + chi2_result.ix[merge_idx, 'actual_0']
+        chi2_result.ix[idx, 'actual_1'] = chi2_result.ix[idx, 'actual_1'] + chi2_result.ix[merge_idx, 'actual_1']
+        chi2_result.ix[idx, 'expect_0'] = chi2_result.ix[idx, 'expect_0'] + chi2_result.ix[merge_idx, 'expect_0']    
+        chi2_result.ix[idx, 'expect_1'] = chi2_result.ix[idx, 'expect_1'] + chi2_result.ix[merge_idx, 'expect_1']   
+        chi2_0 = (chi2_result.ix[idx, 'expect_0'] - chi2_result.ix[idx, 'actual_0'])**2 / chi2_result.ix[idx, 'expect_0']
+        chi2_1 = (chi2_result.ix[idx, 'expect_1'] - chi2_result.ix[idx, 'actual_1'])**2 / chi2_result.ix[idx, 'expect_1']
+        chi2_result.ix[idx, 'chi2_value'] = chi2_0 + chi2_1
+        #调整每个区间的起始值
+        if idx < merge_idx:
+            chi2_result.ix[idx, self.xname+'_end'] = chi2_result.ix[merge_idx, self.xname+'_end']
+        else:
+            chi2_result.ix[idx, self.xname+'_start'] = chi2_result.ix[merge_idx, self.xname+'_start']
+        chi2_result = chi2_result.drop([merge_idx])
+        chi2_result = chi2_result.reset_index(drop=True)
+        
+        return chi2_result
+    
+    '''
+    ---------------------------CAIM分箱----------------------
+    '''
+    def caim(self):
+        # 取出数据集的最大值和最小值并定义上下界
+        caim_max = max(self.var_value)
+        caim_min = min(self.var_value) - 0.01
+        caim_limit = [caim_min,caim_max]
+        # 初始化全局最优值
+        caim_global = float(0)
+        # 初始断点数
+        var_break = copy.deepcopy(self.var_value)
+        var_break.remove(caim_max)
+        #循环求解
+        caim_break = [];caim_value = []
+        for i in range(0,self.max_interval-1):
+            for j in var_break:
+                box = [j] + caim_limit
+                caim_va = self.caim_best(box=box)
+                caim_break.append(box)
+                caim_value.append(caim_va)
+            break_result = pd.DataFrame({'caim_break':caim_break,'caim_value':caim_value})
+            break_best =break_result[break_result['caim_value'] == max(break_result['caim_value'])]
+            if (list(break_best[:1]['caim_value'])[0] > caim_global) == True:
+                bin_break = list(break_best[:1]['caim_break'])[0]
+                caim_global = list(break_best[:1]['caim_value'])[0]
+                var_break.remove(j)
+            else:
+                break
+        return sorted(bin_break)
+
+      
+    # caim全局最优值
+    def caim_best(self,box):
+        # 断点个数
+        caim_box = len(box)
+        if caim_box == 0:
+            print('请输入分段区间')
+        else:
+            caim_bin = sorted(box)
+            # 对数据点进行分段
+            caim_name_cnt = [];caim_0_cnt = [];caim_1_cnt = [];caim_cnt = [];
+            caim_g_rate = [];caim_b_rate = []
+            
+            # 好坏样本数
+            caim_g = self.input[(self.input[self.yname]==self.y[0]) & \
+                                (self.input[self.xname].isnull() == False)].shape[0]
+            caim_b = self.input[(self.input[self.yname]==self.y[1]) & \
+                                (self.input[self.xname].isnull() == False)].shape[0]
+            
+            for value in range(1,caim_box):
+                caim_0 = self.input[(self.input[self.xname]>caim_bin[value-1])& \
+                                    (self.input[self.xname]<=caim_bin[value])& \
+                                    (self.input[self.yname]==self.y[0])].shape[0]
+                caim_1 = self.input[(self.input[self.xname]>caim_bin[value-1])& \
+                                    (self.input[self.xname]<=caim_bin[value])& \
+                                    (self.input[self.yname]==self.y[1])].shape[0]
+                caim_all = caim_0 + caim_1
+                caim_0_rate = caim_0**2/(caim_all*caim_g)
+                caim_1_rate = caim_1**2/(caim_all*caim_b)
+                caim_name = '%s~%s' %(caim_bin[value-1],caim_bin[value])
+                caim_name_cnt.append(caim_name)
+                caim_0_cnt.append(caim_0)
+                caim_1_cnt.append(caim_1)
+                caim_cnt.append(caim_all)
+                caim_g_rate.append(caim_0_rate)
+                caim_b_rate.append(caim_1_rate)
+            
+            caim_result = pd.DataFrame({'name':caim_name_cnt,'caim_0':caim_0_cnt, \
+                                        'caim_1':caim_1_cnt,'caim_cnt':caim_cnt, \
+                                        'caim_g_rate':caim_g_rate,'caim_b_rate':caim_b_rate})
+            caim_cacc = (caim_g + caim_b) * (caim_result['caim_g_rate'].sum() + \
+                         caim_result['caim_b_rate'].sum() - 1)/math.log(caim_box -1)
+            if caim_result['caim_cnt'].min() < self.num:
+                return 0
+            else:
+                return((caim_cacc/(caim_cacc + caim_g + caim_b))**0.5)
+                
+
+               
